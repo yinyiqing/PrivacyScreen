@@ -1,7 +1,7 @@
 开发记录
 1. 本次目标
 本次目标是验证并实现一个 Windows 隐私屏：
-- 被控端的 PVE 画面显示指定图片。
+- 被控端的 PVE 画面显示黑屏。
 - 控制端和录屏程序仍然可以看到原始桌面。
 - GStreamer 使用 d3d11screencapturesrc 捕获桌面。
 - 捕获结果保存为 MP4 文件。
@@ -9,7 +9,7 @@
 2. 环境
 当前测试环境是 Windows 虚拟机，通过 PVE 访问。
 PVE 在测试中可以作为“类似物理显示器”的观察端：
-- 开启隐私屏后，PVE 能看到指定图片。
+- 开启隐私屏后，PVE 能看到黑屏。
 - GStreamer 在 PVE/ 桌面会话中可以录到原始桌面。
 但 PVE 和真实物理显示器仍然可能存在差异。
 
@@ -22,15 +22,15 @@ PVE 在测试中可以作为“类似物理显示器”的观察端：
 4. 隐私屏实现方式
 当前 Go 程序的实现方式是软件遮盖：
 1. 创建一个全屏置顶窗口。
-2. 窗口背景绘制为指定图片。
+2. 窗口背景绘制为纯黑色。
 3. 这个窗口覆盖整个虚拟屏幕区域。
-4. PVE 看到的是这个图片窗口。
+4. PVE 看到的是这个黑色窗口。
 为了让录屏仍能捕获原始桌面：
 程序调用 Windows API：SetWindowDisplayAffinity
 并设置：WDA_EXCLUDEFROMCAPTURE
 作用是让 Windows 支持的屏幕捕获接口不要捕获这个黑色遮盖窗口。
 所以当前效果是：
-PVE看到：指定图片
+PVE看到：黑屏
 GStreamer 录到：原始桌面
 
 5. 当前项目文件
@@ -46,14 +46,9 @@ build.ps1                          build.bat 调用的编译脚本
 双击 build.bat 生成 privacy-screen.exe 
 
 6.2 开启隐私屏
-先把要显示的图片放到项目目录，并命名为：
-privacy-screen.png
-
 在 PVE 桌面里双击：
 start-privacy-screen.bat
 （也可以在这里定时关闭）
-
-如果没有 privacy-screen.png，会自动退回黑屏。
 
 6.3 通过 SSH 关闭隐私屏
 隐私屏开启后，PVE 桌面已经变成黑屏，无法方便地在桌面里双击 stop-privacy-screen.bat，可以通过 SSH 关闭。
@@ -69,5 +64,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\ssh-stop-privacy-screen.ps1
 7. 当前结论
 本次测试已经验证：
 - Go 程序可以开启软件隐私屏。
-- PVE 可以看到指定图片。
+- PVE 可以看到黑屏。
 - GStreamer 使用 d3d11screencapturesrc 可以在隐私屏开启期间录到原始桌面。
