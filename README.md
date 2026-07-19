@@ -21,22 +21,14 @@ PVE 在测试中可以作为“类似物理显示器”的观察端：
 
 4. 隐私屏实现方式
 当前 Go 程序的实现方式是软件遮盖：
-1. 创建一个全屏置顶窗口。
-2. 窗口背景绘制为纯黑色。
-3. 这个窗口覆盖整个虚拟屏幕区域。
-4. PVE 看到的是这个黑色窗口。
-为了让录屏仍能捕获原始桌面：
-程序调用 Windows API：SetWindowDisplayAffinity
-并设置：WDA_EXCLUDEFROMCAPTURE
-作用是让 Windows 支持的屏幕捕获接口不要捕获这个黑色遮盖窗口。
-所以当前效果是：
-PVE看到：黑屏
-GStreamer 录到：原始桌面
+- 创建一个全屏置顶窗口，覆盖整个虚拟屏幕区域。
+- 使用 GDI+ 加载 privacy-screen.png，并绘制到这个遮盖窗口上。
+- 调用 Windows API：SetWindowDisplayAffinity
+- 设置：WDA_EXCLUDEFROMCAPTURE
 
-4.1 黑屏替换成图片
-当前版本支持把黑屏替换成指定图片。
-实现方式是在全屏置顶窗口中使用 GDI+ 加载并绘制图片，遮盖窗口仍然会通过 SetWindowDisplayAffinity 排除在屏幕捕获之外。
-所以替换成图片后的效果是：
+SetWindowDisplayAffinity 的作用是让 Windows 支持的屏幕捕获接口不要捕获这个遮盖窗口。
+
+所以当前效果是：
 PVE看到：指定图片
 GStreamer 录到：原始桌面
 
