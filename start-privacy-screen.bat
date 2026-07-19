@@ -10,7 +10,13 @@ if not exist "privacy-screen.exe" (
 )
 
 echo Starting privacy screen.
-echo It will close automatically after 20 seconds.
+echo It will close automatically after 5 seconds.
 echo.
-"%~dp0privacy-screen.exe" on --timeout 20 --click-through=false --hide-cursor=false
+if exist "%~dp0privacy-screen.png" (
+    echo Using image: %~dp0privacy-screen.png
+    "%~dp0privacy-screen.exe" on --timeout 5 --click-through=false --hide-cursor=false --image "%~dp0privacy-screen.png" --image-mode stretch
+) else (
+    echo privacy-screen.png was not found. Using black screen.
+    "%~dp0privacy-screen.exe" on --timeout 5 --click-through=false --hide-cursor=false
+)
 pause

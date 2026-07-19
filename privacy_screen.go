@@ -50,8 +50,9 @@ const (
 )
 
 var (
-	user32 = syscall.NewLazyDLL("user32.dll")
-	gdi32  = syscall.NewLazyDLL("gdi32.dll")
+	user32  = syscall.NewLazyDLL("user32.dll")
+	gdi32   = syscall.NewLazyDLL("gdi32.dll")
+	gdiplus = syscall.NewLazyDLL("gdiplus.dll")
 
 	procRegisterClassExW      = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW       = user32.NewProc("CreateWindowExW")
@@ -80,8 +81,20 @@ var (
 	procGetClientRect         = user32.NewProc("GetClientRect")
 	procGetDC                 = user32.NewProc("GetDC")
 	procReleaseDC             = user32.NewProc("ReleaseDC")
+	procGdiplusStartup        = gdiplus.NewProc("GdiplusStartup")
+	procGdiplusShutdown       = gdiplus.NewProc("GdiplusShutdown")
+	procGdipLoadImageFromFile = gdiplus.NewProc("GdipLoadImageFromFile")
+	procGdipGetImageWidth     = gdiplus.NewProc("GdipGetImageWidth")
+	procGdipGetImageHeight    = gdiplus.NewProc("GdipGetImageHeight")
+	procGdipCreateFromHDC     = gdiplus.NewProc("GdipCreateFromHDC")
+	procGdipDrawImageRectI    = gdiplus.NewProc("GdipDrawImageRectI")
+	procGdipDeleteGraphics    = gdiplus.NewProc("GdipDeleteGraphics")
+	procGdipDisposeImage      = gdiplus.NewProc("GdipDisposeImage")
 
 	clickThroughHitTest bool
+	overlayImage        *gdipImage
+	overlayImageMode    string
+	gdiplusToken        uintptr
 )
 
 type wndClassEx struct {
@@ -129,6 +142,19 @@ type paintStruct struct {
 	Reserved  [32]byte
 }
 
+type gdiplusStartupInput struct {
+	GdiplusVersion           uint32
+	DebugEventCallback       uintptr
+	SuppressBackgroundThread int32
+	SuppressExternalCodecs   int32
+}
+
+type gdipImage struct {
+	Handle uintptr
+	Width  int32
+	Height int32
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -159,7 +185,7 @@ func main() {
 
 func usage() {
 	fmt.Println("Usage:")
-	fmt.Println("  privacy-screen.exe on [--timeout 60] [--exclude-from-capture=true] [--click-through=true] [--hide-cursor=true]")
+	fmt.Println("  privacy-screen.exe on [--timeout 60] [--image path] [--image-mode stretch|fit] [--exclude-from-capture=true] [--click-through=true] [--hide-cursor=true]")
 	fmt.Println("  privacy-screen.exe off")
 	fmt.Println("  privacy-screen.exe status")
 }
@@ -170,7 +196,27 @@ func runOn(args []string) {
 	excludeFromCapture := fs.Bool("exclude-from-capture", true, "hide the black overlay from supported screen capture APIs")
 	clickThrough := fs.Bool("click-through", true, "let mouse input pass through the overlay to the real desktop")
 	hideCursor := fs.Bool("hide-cursor", true, "hide the local cursor while the privacy screen is active")
+	imagePath := fs.String("image", "", "image file shown on the privacy screen; png, jpg, jpeg, and gif are supported")
+	imageMode := fs.String("image-mode", "stretch", "image display mode: stretch or fit")
 	_ = fs.Parse(args)
+
+	overlayImage = nil
+	overlayImageMode = *imageMode
+	if *imagePath != "" {
+		if err := startGDIPlus(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start GDI+, fallback to black screen: %v\n", err)
+		}
+		img, err := loadGDIPlusImage(*imagePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load privacy screen image, fallback to black screen: %v\n", err)
+		} else {
+			overlayImage = img
+			defer disposeGDIPlusImage(overlayImage)
+		}
+	}
+	if gdiplusToken != 0 {
+		defer stopGDIPlus()
+	}
 
 	if findOverlay() != 0 {
 		fmt.Fprintln(os.Stderr, "privacy screen is already running")
@@ -197,7 +243,11 @@ func runOn(args []string) {
 	}
 
 	showOverlay(hwnd)
-	fmt.Println("privacy screen is on")
+	if overlayImage != nil {
+		fmt.Println("privacy screen is on with image")
+	} else {
+		fmt.Println("privacy screen is on with black screen")
+	}
 
 	if *timeout > 0 {
 		go func() {
@@ -353,17 +403,13 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wParam, lParam)
 		return ret
 	case wmEraseBkgnd:
-		var r rect
-		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-		blackBrush, _, _ := procGetStockObject.Call(4)
-		procFillRect.Call(wParam, uintptr(unsafe.Pointer(&r)), blackBrush)
+		paintOverlayDC(hwnd, wParam)
 		return 1
 	case wmPaint:
 		var ps paintStruct
 		hdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		if hdc != 0 {
-			blackBrush, _, _ := procGetStockObject.Call(4)
-			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&ps.Paint)), blackBrush)
+			paintOverlayDC(hwnd, hdc)
 			procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		}
 		procValidateRect.Call(hwnd, 0)
@@ -381,15 +427,138 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 }
 
 func paintBlack(hwnd uintptr) {
-	var r rect
 	dc, _, _ := procGetDC.Call(hwnd)
 	if dc == 0 {
 		return
 	}
 	defer procReleaseDC.Call(hwnd, dc)
+	paintOverlayDC(hwnd, dc)
+}
+
+func paintOverlayDC(hwnd uintptr, dc uintptr) {
+	var r rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
 	blackBrush, _, _ := procGetStockObject.Call(4)
 	procFillRect.Call(dc, uintptr(unsafe.Pointer(&r)), blackBrush)
+
+	if overlayImage == nil || overlayImage.Handle == 0 {
+		return
+	}
+
+	dstX, dstY, dstW, dstH := imageDestination(r, overlayImage.Width, overlayImage.Height, overlayImageMode)
+	drawGDIPlusImage(dc, overlayImage, dstX, dstY, dstW, dstH)
+}
+
+func imageDestination(r rect, imageWidth, imageHeight int32, mode string) (int32, int32, int32, int32) {
+	screenW := r.Right - r.Left
+	screenH := r.Bottom - r.Top
+	if screenW <= 0 || screenH <= 0 || imageWidth <= 0 || imageHeight <= 0 {
+		return 0, 0, screenW, screenH
+	}
+	if mode != "fit" {
+		return 0, 0, screenW, screenH
+	}
+
+	sw := float64(screenW)
+	sh := float64(screenH)
+	iw := float64(imageWidth)
+	ih := float64(imageHeight)
+	scale := sw / iw
+	if ih*scale > sh {
+		scale = sh / ih
+	}
+	dstW := int32(iw * scale)
+	dstH := int32(ih * scale)
+	dstX := (screenW - dstW) / 2
+	dstY := (screenH - dstH) / 2
+	if dstW <= 0 {
+		dstW = 1
+	}
+	if dstH <= 0 {
+		dstH = 1
+	}
+	return dstX, dstY, dstW, dstH
+}
+
+func startGDIPlus() error {
+	if gdiplusToken != 0 {
+		return nil
+	}
+	input := gdiplusStartupInput{GdiplusVersion: 1}
+	status, _, err := procGdiplusStartup.Call(
+		uintptr(unsafe.Pointer(&gdiplusToken)),
+		uintptr(unsafe.Pointer(&input)),
+		0,
+	)
+	if status != 0 {
+		return fmt.Errorf("GdiplusStartup failed: status=%d err=%v", status, err)
+	}
+	return nil
+}
+
+func stopGDIPlus() {
+	if gdiplusToken == 0 {
+		return
+	}
+	procGdiplusShutdown.Call(gdiplusToken)
+	gdiplusToken = 0
+}
+
+func loadGDIPlusImage(path string) (*gdipImage, error) {
+	var handle uintptr
+	status, _, err := procGdipLoadImageFromFile.Call(
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(path))),
+		uintptr(unsafe.Pointer(&handle)),
+	)
+	if status != 0 || handle == 0 {
+		return nil, fmt.Errorf("GdipLoadImageFromFile failed: status=%d err=%v", status, err)
+	}
+
+	var width uint32
+	status, _, err = procGdipGetImageWidth.Call(handle, uintptr(unsafe.Pointer(&width)))
+	if status != 0 || width == 0 {
+		procGdipDisposeImage.Call(handle)
+		return nil, fmt.Errorf("GdipGetImageWidth failed: status=%d err=%v", status, err)
+	}
+
+	var height uint32
+	status, _, err = procGdipGetImageHeight.Call(handle, uintptr(unsafe.Pointer(&height)))
+	if status != 0 || height == 0 {
+		procGdipDisposeImage.Call(handle)
+		return nil, fmt.Errorf("GdipGetImageHeight failed: status=%d err=%v", status, err)
+	}
+
+	return &gdipImage{
+		Handle: handle,
+		Width:  int32(width),
+		Height: int32(height),
+	}, nil
+}
+
+func disposeGDIPlusImage(img *gdipImage) {
+	if img == nil || img.Handle == 0 {
+		return
+	}
+	procGdipDisposeImage.Call(img.Handle)
+	img.Handle = 0
+}
+
+func drawGDIPlusImage(dc uintptr, img *gdipImage, x, y, width, height int32) {
+	var graphics uintptr
+	status, _, _ := procGdipCreateFromHDC.Call(dc, uintptr(unsafe.Pointer(&graphics)))
+	if status != 0 || graphics == 0 {
+		return
+	}
+	defer procGdipDeleteGraphics.Call(graphics)
+
+	procGdipDrawImageRectI.Call(
+		graphics,
+		img.Handle,
+		uintptr(int32ToIntArg(x)),
+		uintptr(int32ToIntArg(y)),
+		uintptr(int32ToIntArg(width)),
+		uintptr(int32ToIntArg(height)),
+	)
 }
 
 func findOverlay() uintptr {
