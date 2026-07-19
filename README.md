@@ -33,6 +33,19 @@ PVE 在测试中可以作为“类似物理显示器”的观察端：
 PVE看到：黑屏
 GStreamer 录到：原始桌面
 
+4.1 黑屏替换成图片
+当前版本支持把黑屏替换成指定图片。
+实现方式是在全屏置顶窗口中使用 GDI+ 加载并绘制图片，遮盖窗口仍然会通过 SetWindowDisplayAffinity 排除在屏幕捕获之外。
+所以替换成图片后的效果是：
+PVE看到：指定图片
+GStreamer 录到：原始桌面
+
+使用时，把要显示的图片放到项目目录，并命名为：
+privacy-screen.png
+
+然后双击 start-privacy-screen.bat 即可。
+如果没有 privacy-screen.png，程序会自动退回黑屏。
+
 5. 当前项目文件
 主要文件：
 privacy_screen.go                  隐私屏 Go 源码
@@ -46,9 +59,14 @@ build.ps1                          build.bat 调用的编译脚本
 双击 build.bat 生成 privacy-screen.exe 
 
 6.2 开启隐私屏
+如果要显示图片，先把图片放到项目目录，并命名为：
+privacy-screen.png
+
 在 PVE 桌面里双击：
 start-privacy-screen.bat
 （也可以在这里定时关闭）
+
+如果没有 privacy-screen.png，会显示黑屏。
 
 6.3 通过 SSH 关闭隐私屏
 隐私屏开启后，PVE 桌面已经变成黑屏，无法方便地在桌面里双击 stop-privacy-screen.bat，可以通过 SSH 关闭。
